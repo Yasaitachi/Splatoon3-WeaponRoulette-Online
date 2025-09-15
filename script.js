@@ -1957,27 +1957,12 @@ function setRealtimeUiState(uiState) {
     const isHost = uiState === 'in_room_host';
     const roomTimerContainer = $('#room-timer-container');
     const isViewer = uiState === 'in_room_viewer';
-    const isError = uiState === 'error';
-    const isOnlineFeatureAvailable = !!state.db && !isError;
-
-    // --- Online Feature UI Control ---
-    if (isOnlineFeatureAvailable) {
-        // Online Mode
-        $('#openRealtimeBtn').style.display = inRoom ? 'none' : 'inline-flex';
-        friendsBtn.style.display = state.playerName ? 'inline-flex' : 'none';
-        playerSettingsBtn.style.display = 'inline-flex';
-    } else {
-        // Offline Mode
-        $('#openRealtimeBtn').style.display = 'none';
-        friendsBtn.style.display = 'none';
-        playerSettingsBtn.style.display = 'none';
-    }
-    updateAdminUI(); // Update admin link visibility
-
-    // --- In-Room UI Control ---
+    $('#openRealtimeBtn').style.display = inRoom ? 'none' : 'inline-flex';
+    friendsBtn.style.display = state.playerName ? 'inline-flex' : 'none';
     roomInfoUi.style.display = inRoom ? 'flex' : 'none';
     playerListContainer.style.display = inRoom ? 'block' : 'none';
-    // Display only when in a room and the timer is active. / ルーム内にいて、タイマーが作動している場合のみ表示する
+    const isError = uiState === 'error';
+    // Display only when in a room and the timer is active.
     if (inRoom && state.roomExpiryTimer) {
       roomTimerContainer.style.display = 'inline-flex';
     } else {
@@ -2148,10 +2133,9 @@ function sendChatMessage() {
 function updateAdminUI() {
   const myId = getPersistentUserId();
   const isAdmin = myId && ADMIN_USER_IDS.map(id => id.toLowerCase()).includes(myId.toLowerCase());
-  const isOnlineFeatureAvailable = !!state.db;
 
   if (adminLink) {
-    adminLink.style.display = isAdmin && isOnlineFeatureAvailable ? 'inline-flex' : 'none';
+    adminLink.style.display = isAdmin ? 'inline-flex' : 'none';
   }
 }
 
