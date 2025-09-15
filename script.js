@@ -46,6 +46,7 @@ const state = {
   lang: 'ja',
   theme: 'system',
   roomPassword: null,
+  roomHasPassword: false,
   voiceChannelInvite: null,
   roomExpiryTimer: null,
   mutedUsers: {},
@@ -1538,6 +1539,7 @@ async function createRoom() { // Update UI state to give user feedback that it's
 
         state.roomId = newRoomId;
         state.roomRef = roomsRef.child(state.roomId);
+        state.roomHasPassword = !!password;
 
         const playerShortId = await getOrCreateUserShortId(persistentUserId, name);
 
@@ -1615,6 +1617,7 @@ async function joinRoom(roomId, password) {
     }
 
     const roomData = snapshot.val();
+    state.roomHasPassword = !!roomData.password;
 
     // ▼▼▼ Added from here / ここから追加 ▼▼▼
     const visibility = roomData.visibility || 'public'; // Fallback for old room data / 古いルームデータのためのフォールバック
@@ -2064,6 +2067,7 @@ function handleLeaveRoom(removeFromDb = true, options = {}) {
   state.roomId = null;
   state.isHost = false;
   state.roomPassword = null;
+  state.roomHasPassword = false;
   // Reset voice channel state. / ボイスチャンネルの状態をリセット
   joinVoiceChannelBtn.style.display = 'none';
   joinVoiceChannelBtn.onclick = null;
@@ -2316,7 +2320,7 @@ function renderFriendSearchResults(users) {
 }
 
 async function inviteFriendToRoom(friendId, friendName) {
-  if (!state.isHost || !state.roomId) return;
+  if (!state.roomId) return;
 
   try {
     const invitationsRef = state.db.ref(`invitations/${friendId}`);
@@ -2331,7 +2335,7 @@ async function inviteFriendToRoom(friendId, friendName) {
     const invitationData = {
       roomId: state.roomId,
       hostName: state.playerName,
-      hasPassword: !!state.roomPassword,
+      hasPassword: state.roomHasPassword,
       timestamp: firebase.database.ServerValue.TIMESTAMP,
     };
 
@@ -2347,6 +2351,7 @@ function showInvitationToast(invitation, invitationId) {
   const toastContainer = document.getElementById('toast-container');
   if (!toastContainer) return;
 
+  // If a toast for this room is already visible, ignore the new invitation. / このルームのトーストが既に表示されている場合、新しい招待は無視する。
   if ($$(`.toast[data-room-id="${roomId}"]`).length > 0) {
     state.db.ref(`invitations/${getPersistentUserId()}/${invitationId}`).remove();
     return;
@@ -2363,12 +2368,21 @@ function showInvitationToast(invitation, invitationId) {
   const actionsEl = document.createElement('div');
   actionsEl.className = 'toast-actions';
 
+  let timeoutId = null;
+
+  // Function to clean up the toast and the DB entry. / トーストとDBエントリをクリーンアップする関数。
+  const cleanup = () => {
+    if (timeoutId) clearTimeout(timeoutId);
+    toast.classList.remove('show');
+    toast.addEventListener('transitionend', () => toast.remove());
+    state.db.ref(`invitations/${getPersistentUserId()}/${invitationId}`).remove();
+  };
+
   const joinBtn = document.createElement('button');
   joinBtn.className = 'btn';
   joinBtn.textContent = t('friends-invitation-join');
   joinBtn.onclick = async () => {
-    toast.remove();
-    state.db.ref(`invitations/${getPersistentUserId()}/${invitationId}`).remove();
+    cleanup();
     const password = hasPassword ? prompt(t('realtime-password-prompt')) : '';
     if (password !== null) await joinRoom(roomId, password);
   };
@@ -2376,18 +2390,25 @@ function showInvitationToast(invitation, invitationId) {
   const declineBtn = document.createElement('button');
   declineBtn.className = 'btn secondary';
   declineBtn.textContent = t('friends-invitation-decline');
-  declineBtn.onclick = () => {
-    toast.remove();
-    state.db.ref(`invitations/${getPersistentUserId()}/${invitationId}`).remove();
-  };
+  declineBtn.onclick = cleanup;
 
   actionsEl.appendChild(joinBtn);
   actionsEl.appendChild(declineBtn);
   toast.appendChild(messageEl);
   toast.appendChild(actionsEl);
+
+  const duration = 30000; // 30 seconds
+  const progressBar = document.createElement('div');
+  progressBar.className = 'toast-progress-bar';
+  progressBar.style.animationDuration = `${duration}ms`;
+  toast.appendChild(progressBar);
+
   toastContainer.appendChild(toast);
 
   setTimeout(() => toast.classList.add('show'), 10);
+
+  // Set a timeout to automatically decline the invitation. / 招待を自動的に拒否するためのタイムアウトを設定。
+  timeoutId = setTimeout(cleanup, duration);
 }
 
 async function sendFriendRequest(targetShortId) {
@@ -2480,7 +2501,7 @@ async function removeFriend(friendId, friendName) {
 
 function renderFriendsList() {
   const container = $('#friends-list-container');
-  const isHost = state.isHost && state.roomId;
+  const canInvite = !!state.roomId;
   if (friendsState.friends.length === 0) {
     container.innerHTML = `<div class="empty">${t('friends-empty')}</div>`;
     return;
@@ -2500,7 +2521,7 @@ function renderFriendsList() {
     const statusClass = isOnline ? 'online' : 'offline';
     
     let inviteBtn = '';
-    if (isHost) {
+    if (canInvite) {
       const isInMyRoom = state.players.some(p => p.id === friend.id);
       if (!isInMyRoom) {
         inviteBtn = `<button class="btn" data-action="invite-friend" data-friend-id="${friend.id}" data-friend-name="${escapeHTML(friend.name)}" style="padding: 4px 8px; font-size: 12px;">${t('friends-invite-to-room')}</button>`;
