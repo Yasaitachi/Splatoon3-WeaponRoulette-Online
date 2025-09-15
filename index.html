@@ -32,7 +32,8 @@
           <button id="inviteBtn" class="btn secondary" style="padding: 4px 10px; font-size: 13px;" data-i18n-key="invite-button">招待</button>
           <div id="invite-menu" class="dropdown-menu">
             <button class="dropdown-item" id="copyInviteLinkBtn" data-i18n-key="realtime-copy-invite-link">招待リンクをコピー</button>
-            <button class="dropdown-item" id="inviteFriendsBtn" data-i18n-key="friends-invite-title">フレンドを招待</button>
+            <button class="dropdown-item" id="notifyChannelBtn" data-i18n-key="channel-notify-room">チャンネルに通知</button>
+            <button class="dropdown-item" id="inviteChannelMembersBtn" data-i18n-key="channel-invite-title">メンバーを個別に招待</button>
           </div>
         </div>
             <button id="setVcLinkBtn" class="btn secondary" data-i18n-key="realtime-set-vc-link" style="padding: 4px 10px; font-size: 13px; display: none;">VCリンク設定</button>
@@ -69,10 +70,11 @@
       <button id="playerSettingsBtn" class="btn secondary icon" data-i18n-title="player-settings-title">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="8" r="5"/><path d="M20 21a8 8 0 0 0-16 0"/></svg>
       </button>
-      <button id="friendsBtn" class="btn secondary icon" data-i18n-title="friends-title" style="display: none;">
+      <button id="channelBtn" class="btn secondary icon" data-i18n-title="channel-title" style="display: none; position: relative;">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M17 21v-2a4 4 0 0 0-4-4H5a4 4 0 0 0-4 4v2"/><circle cx="9" cy="7" r="4"/><path d="M23 21v-2a4 4 0 0 0-3-3.87"/><path d="M16 3.13a4 4 0 0 1 0 7.75"/></svg>
+        <span id="notification-badge" class="notification-badge" style="display: none;"></span>
       </button>
-      <button id="openRealtimeBtn" class="btn secondary icon" data-i18n-title="realtime-settings-title">
+      <button id="openRealtimeBtn" class="btn secondary icon" data-i18n-title="realtime-title">
         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
           <circle cx="12" cy="12" r="10"></circle><line x1="2" y1="12" x2="22" y2="12"></line><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"></path>
         </svg>
@@ -213,7 +215,7 @@
     <div id="realtimeModal" class="modal-overlay" style="display: none;">
       <div class="modal-content card">
         <div class="modal-header">
-          <h2 data-i18n-key="realtime-settings-title">オンライン設定</h2>
+          <h2 data-i18n-key="realtime-title">オンライン設定</h2>
           <button id="closeRealtimeBtn" class="btn icon secondary" data-i18n-aria-label="settings-close" title="設定を閉じる">&times;</button>
         </div>
         <div class="modal-body">
@@ -236,13 +238,28 @@
         <!-- ▲▲▲ ここまで追加 ▲▲▲ -->
 
           <div class="modal-divider"><span data-i18n-key="or-divider">または</span></div>
+
+          <div class="settings-section">
+            <h3 data-i18n-key="realtime-join-by-id-title">ルームIDで参加</h3>
+            <div class="setting-item">
+              <label for="joinRoomIdInput" data-i18n-key="realtime-room-id">ルームID</label>
+              <input type="text" id="joinRoomIdInput" class="input-text" data-i18n-placeholder="realtime-room-id-placeholder" maxlength="12">
+            </div>
+            <div class="setting-item">
+              <label for="joinRoomPasswordInput" data-i18n-key="realtime-room-password">パスワード (任意)</label>
+              <input type="text" id="joinRoomPasswordInput" class="input-text" data-i18n-placeholder="realtime-password-placeholder">
+            </div>
+            <button id="joinRoomByIdBtn" class="btn" data-i18n-key="realtime-join-btn">参加する</button>
+          </div>
+
+          <div class="modal-divider"><span data-i18n-key="or-divider">または</span></div>
           <div class="settings-section">
             <h3 data-i18n-key="realtime-create-title">新しいルームを作成</h3>
             <div class="setting-item">
                 <strong data-i18n-key="realtime-room-visibility">公開範囲</strong>
                 <div class="setting-control">
                     <label class="chip"><input type="radio" name="roomVisibility" value="public" checked> <span data-i18n-key="admin-room-public">公開</span></label>
-                    <label class="chip"><input type="radio" name="roomVisibility" value="friends"> <span data-i18n-key="realtime-visibility-friends">フレンドのみ</span></label>
+                    <label class="chip"><input type="radio" name="roomVisibility" value="channel"> <span data-i18n-key="realtime-visibility-channel">チャンネルメンバーのみ</span></label>
                     <label class="chip"><input type="radio" name="roomVisibility" value="private"> <span data-i18n-key="admin-room-private">非公開</span></label>
                 </div>
             </div>
@@ -254,6 +271,38 @@
                 </label>
             </div>
             <button id="createRoomBtn" class="btn" data-i18n-key="realtime-create-btn">新しいルームを作成</button>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <div id="channelModal" class="modal-overlay" style="display: none;">
+      <div class="modal-content card">
+        <div class="modal-header">
+          <h2 data-i18n-key="channel-title">チャンネル</h2>
+          <button id="closeChannelModalBtn" class="btn icon secondary" title="閉じる">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div class="settings-section">
+            <h3 data-i18n-key="notifications-title">通知</h3>
+            <div id="notifications-list" class="notifications-list custom-scrollbar">
+              <!-- Notifications will be populated by JS -->
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n-key="channel-join-title">チャンネルに参加</h3>
+            <div class="setting-item">
+              <label for="channelNameInput" data-i18n-key="channel-name-label">チャンネル名</label>
+              <input type="text" id="channelNameInput" class="input-text" data-i18n-placeholder="channel-name-placeholder" maxlength="20">
+            </div>
+            <div class="setting-control" style="justify-content: flex-end;">
+              <button id="leaveChannelBtn" class="btn danger" data-i18n-key="channel-leave-btn" style="display: none;">退出</button>
+              <button id="joinChannelBtn" class="btn" data-i18n-key="channel-join-btn">参加</button>
+            </div>
+          </div>
+          <div class="settings-section">
+            <h3 data-i18n-key="channel-members-title">チャンネルメンバー</h3>
+            <div id="channel-members-container" class="channel-members-list custom-scrollbar"></div>
           </div>
         </div>
       </div>
@@ -277,41 +326,6 @@
           <div class="setting-item" style="align-items: center;">
             <strong data-i18n-key="player-id-label">あなたのプレイヤーID</strong>
             <div id="playerShortIdDisplay" class="player-id-display-large">#-----</div>
-          </div>
-        </div>
-      </div>
-    </div>
-
-    <div id="friendsModal" class="modal-overlay" style="display: none;">
-      <div class="modal-content card">
-        <div class="modal-header">
-          <h2 data-i18n-key="friends-title">フレンド</h2>
-          <button id="closeFriendsModalBtn" class="btn icon secondary" title="閉じる">&times;</button>
-        </div>
-        <div class="modal-body" style="padding-top: 0;">
-          <div class="tabs">
-            <button class="tab-btn active" data-tab="friends-list-tab" data-i18n-key="friends-list">フレンドリスト</button>
-            <button class="tab-btn" data-tab="friends-requests-tab" data-i18n-key="friends-requests-received">受信した申請</button>
-            <button class="tab-btn" data-tab="friends-add-tab" data-i18n-key="friends-add">フレンド追加</button>
-          </div>
-          <div id="friends-list-tab" class="tab-content active">
-            <div id="friends-list-container" class="friends-list custom-scrollbar">
-              <!-- フレンドリストがここに表示される -->
-            </div>
-          </div>
-          <div id="friends-requests-tab" class="tab-content">
-            <div id="friends-requests-container" class="friends-list custom-scrollbar">
-              <!-- 受信した申請がここに表示される -->
-            </div>
-          </div>
-          <div id="friends-add-tab" class="tab-content">
-            <div class="setting-item">
-              <label for="friendIdInput" data-i18n-key="friends-add-by-id">プレイヤーIDで検索</label>
-              <input type="text" id="friendIdInput" class="input-text" data-i18n-placeholder="friends-add-id-placeholder" maxlength="5">
-            </div>
-            <div id="friend-search-results" class="friends-list custom-scrollbar" style="margin-top: 16px;">
-              <!-- 検索結果がここに表示される -->
-            </div>
           </div>
         </div>
       </div>

@@ -49,6 +49,8 @@ const state = {
   roomHasPassword: false,
   voiceChannelInvite: null,
   roomExpiryTimer: null,
+  notifications: [],
+  unreadNotifications: 0,
   mutedUsers: {},
   isBanned: false,
   globalMuteInfo: null,
@@ -60,7 +62,13 @@ const state = {
   // ▲▲▲ Added up to here / ここまで追加 ▲▲▲
 };
 
-let friendsState = { friends: [], friendRequests: [], friendDataListeners: {}, shortIdMapCache: {} };
+let channelState = {
+  currentChannel: null,
+  members: [],
+  memberDataListeners: {},
+  channelListener: null,
+  invitationListener: null,
+};
 
 const ICONS = {
   FULLSCREEN: `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>`,
@@ -112,14 +120,17 @@ const voiceInputBtn = $('#voiceInputBtn');
 const streamerModeToggle = $('#streamerMode');
 const preventSleepToggle = $('#preventSleep');
 const adminLink = $('#adminLink');
-const friendsBtn = $('#friendsBtn');
-const friendsModal = $('#friendsModal');
-const closeFriendsModalBtn = $('#closeFriendsModalBtn');
+const channelBtn = $('#channelBtn');
+const channelModal = $('#channelModal');
+const closeChannelModalBtn = $('#closeChannelModalBtn');
+const inviteChannelMembersBtn = $('#inviteChannelMembersBtn');
+const notifyChannelBtn = $('#notifyChannelBtn');
 const inviteContainer = $('#invite-container');
 const inviteBtn = $('#inviteBtn');
 const inviteMenu = $('#invite-menu');
-const inviteFriendsBtn = $('#inviteFriendsBtn'); // This is now inside the dropdown
 const realtimeModal = $('#realtimeModal');
+const notificationBadge = $('#notification-badge');
+const notificationsListEl = $('#notifications-list');
 const fullscreenStatusBar = $('#fullscreen-status-bar');
 
 // --- Application Logic / アプリケーションロジック ----------------------------------------------
@@ -219,6 +230,74 @@ async function getOrCreateUserShortId(persistentUserId, playerName) {
     attempts++;
   }
   throw new Error(`Failed to generate a unique shortId after ${MAX_ATTEMPTS} attempts.`);
+}
+
+const MAX_NOTIFICATIONS = 30;
+
+function addNotification(notification) {
+  // Avoid duplicate notifications for the same room within a short time frame
+  if (state.notifications.some(n => n.roomId === notification.roomId && n.timestamp > Date.now() - 60000)) {
+    return;
+  }
+
+  notification.id = generateUUID(); // Give it a unique ID for dismissal
+  notification.read = false;
+  state.notifications.unshift(notification);
+
+  // Limit the number of stored notifications
+  if (state.notifications.length > MAX_NOTIFICATIONS) {
+    state.notifications.pop();
+  }
+
+  state.unreadNotifications++;
+  updateNotificationBadge();
+}
+
+function updateNotificationBadge() {
+  if (!notificationBadge || !channelBtn) return;
+
+  if (state.unreadNotifications > 0) {
+    notificationBadge.textContent = state.unreadNotifications > 9 ? '9+' : state.unreadNotifications;
+    notificationBadge.style.display = 'flex';
+    channelBtn.title = t('notification-badge-title', { count: state.unreadNotifications });
+  } else {
+    notificationBadge.style.display = 'none';
+    channelBtn.title = t('channel-title');
+  }
+}
+
+function renderNotifications() {
+  if (!notificationsListEl) return;
+
+  if (state.notifications.length === 0) {
+    notificationsListEl.innerHTML = `<div class="empty" data-i18n-key="notifications-empty">${t('notifications-empty')}</div>`;
+    return;
+  }
+
+  notificationsListEl.innerHTML = state.notifications.map(n => {
+    const timestamp = new Date(n.timestamp).toLocaleString();
+    const typeText = n.type === 'direct' ? t('notification-type-direct') : t('notification-type-channel');
+    let bodyText = '';
+    if (n.type === 'direct') {
+      bodyText = t('direct-invitation-received', { hostName: n.hostName });
+    } else {
+      bodyText = t('channel-invitation-received', { hostName: n.hostName, channelName: n.channelName });
+    }
+
+    return `
+      <div class="notification-item ${n.read ? '' : 'unread'}" data-notification-id="${n.id}">
+        <div class="notification-header">
+          <span class="notification-type">${typeText}</span>
+          <span class="notification-timestamp">${timestamp}</span>
+        </div>
+        <div class="notification-body">${escapeHTML(bodyText)}</div>
+        <div class="notification-actions">
+          <button class="btn secondary" data-action="dismiss-notification">${t('notification-dismiss-btn')}</button>
+          <button class="btn" data-action="join-from-notification">${t('notification-join-btn')}</button>
+        </div>
+      </div>
+    `;
+  }).join('');
 }
 
 /**
@@ -1513,6 +1592,8 @@ async function createRoom() { // Update UI state to give user feedback that it's
     createRoomBtn.textContent = t('realtime-creating-btn');
     const name = state.playerName;
 
+    showLoader(t('realtime-creating-btn'));
+
     try {
         if (!state.db) { throw new Error(t('db-not-connected-error')); }
         if (!name) {
@@ -1573,6 +1654,7 @@ async function createRoom() { // Update UI state to give user feedback that it's
         console.error("Error creating room:", error);
         showServerError(t('realtime-error-create'), error);
     } finally {
+        hideLoader();
         createRoomBtn.disabled = false;
         $$('#public-rooms-table button[data-action="join-from-list"]').forEach(btn => btn.disabled = false);
         createRoomBtn.textContent = t('realtime-create-btn');
@@ -1588,6 +1670,8 @@ async function joinRoom(roomId, password) {
   $$('#public-rooms-table button[data-action="join-from-list"]').forEach(btn => btn.disabled = true);
 
   let joinedSuccessfully = false;
+
+  showLoader(t('realtime-joining-room'));
 
   try {
     if (!state.db) { throw new Error(t('db-not-connected-error')); }
@@ -1624,15 +1708,15 @@ async function joinRoom(roomId, password) {
     const hostId = roomData.hostId;
     const myId = getPersistentUserId();
 
-    if (visibility === 'friends') {
-        if (hostId !== myId) { // ホスト自身はいつでも入れる
-            const hostFriendsRef = state.db.ref(`users/${hostId}/friends/${myId}`);
-            const isFriendSnapshot = await hostFriendsRef.once('value');
-            if (!isFriendSnapshot.exists()) {
-                showToast(t('realtime-error-friends-only'), 'error');
-                return;
-            }
+    if (visibility === 'channel') {
+      if (hostId !== myId) { // ホスト自身はいつでも入れる
+        const hostChannelSnap = await state.db.ref(`users/${hostId}/currentChannel`).once('value');
+        const hostChannel = hostChannelSnap.val();
+        if (!hostChannel || hostChannel !== channelState.currentChannel) {
+          showToast(t('realtime-error-channel-only'), 'error');
+          return;
         }
+      }
     }
     // Check password only for password-protected rooms. / パスワード付きルームの場合のみ、パスワードをチェック
     if (roomData.password && roomData.password !== password) {
@@ -1686,6 +1770,7 @@ async function joinRoom(roomId, password) {
     console.error("Error joining room:", error.message);
     showServerError(t('realtime-error-join'), error);
   } finally {
+    hideLoader();
     if (!joinedSuccessfully) { // 参加に失敗した場合のみUIと状態をリセット
       if (createRoomBtn) createRoomBtn.disabled = false;
       // Re-enable join buttons in the public list. / 公開リストの参加ボタンを再度有効にする
@@ -1960,8 +2045,7 @@ function setRealtimeUiState(uiState) {
     const isHost = uiState === 'in_room_host';
     const roomTimerContainer = $('#room-timer-container');
     const isViewer = uiState === 'in_room_viewer';
-    $('#openRealtimeBtn').style.display = inRoom ? 'none' : 'inline-flex';
-    friendsBtn.style.display = state.playerName ? 'inline-flex' : 'none';
+    $('#openRealtimeBtn').style.display = inRoom ? 'none' : 'inline-flex'; channelBtn.style.display = state.playerName ? 'inline-flex' : 'none';
     roomInfoUi.style.display = inRoom ? 'flex' : 'none';
     playerListContainer.style.display = inRoom ? 'block' : 'none';
     const isError = uiState === 'error';
@@ -2256,131 +2340,309 @@ async function setVoiceChannelLink() {
   }
 }
 
-// --- Friends Functionality / フレンド機能 ---
-
-async function handleFriendSearch() {
-  const query = $('#friendIdInput').value.trim();
-  const resultsContainer = $('#friend-search-results');
-
-  if (!query) {
-    resultsContainer.innerHTML = '';
-    return;
-  }
-
-  resultsContainer.innerHTML = `<div class="loader-spinner" style="margin: 1rem auto; width: 30px; height: 30px;"></div>`;
-
-  const matchingShortIds = Object.keys(friendsState.shortIdMapCache || {}).filter(id => id.startsWith(query));
-
-  if (matchingShortIds.length === 0) {
-    resultsContainer.innerHTML = `<div class="empty">${t('friends-search-no-results')}</div>`;
+async function joinChannel() {
+  const channelNameInput = $('#channelNameInput');
+  const channelName = channelNameInput.value.trim();
+  if (!channelName) {
+    showToast(t('channel-name-required'), 'error');
     return;
   }
 
   const myId = getPersistentUserId();
-  const friendIds = friendsState.friends.map(f => f.id);
+  if (!myId || !state.db) return;
 
-  const userPromises = matchingShortIds.slice(0, 10).map(shortId => { // Display up to 10 results. / 最大10件の結果を表示
-    const userId = friendsState.shortIdMapCache[shortId];
-    // Exclude self and current friends. / 自分自身と現在のフレンドを除外
-    if (userId === myId || friendIds.includes(userId)) {
-      return null;
-    }
-    return state.db.ref(`users/${userId}`).once('value').then(snap => {
-      if (!snap.exists()) return null;
-      const userData = snap.val();
-      return {
-        id: userId,
-        name: userData.name,
-        shortId: userData.shortId
-      };
-    });
-  }).filter(Boolean);
+  // If already in a channel, leave it first.
+  if (channelState.currentChannel) {
+    await leaveChannel(false); // Don't show toast on implicit leave
+  }
 
-  const users = (await Promise.all(userPromises)).filter(Boolean);
-  renderFriendSearchResults(users);
+  try {
+    // Set current channel for the user
+    await state.db.ref(`users/${myId}/currentChannel`).set(channelName);
+    // Add user to the channel's member list
+    await state.db.ref(`channels/${channelName}/members/${myId}`).set(true);
+
+    channelState.currentChannel = channelName;
+    showToast(t('channel-join-success', { channelName }), 'success');
+    updateChannelModalUI();
+    listenToChannelMembers();
+  } catch (error) {
+    showServerError('Failed to join channel', error);
+  }
 }
 
-function renderFriendSearchResults(users) {
-  const container = $('#friend-search-results');
-  if (users.length === 0) {
-    container.innerHTML = `<div class="empty">${t('friends-search-no-results')}</div>`;
+async function leaveChannel(showSuccessToast = true) {
+  const myId = getPersistentUserId();
+  const currentChannel = channelState.currentChannel;
+
+  if (!myId || !state.db || !currentChannel) return;
+
+  try {
+    // Remove user from the channel's member list
+    await state.db.ref(`channels/${currentChannel}/members/${myId}`).remove();
+    // Remove current channel from the user's data
+    await state.db.ref(`users/${myId}/currentChannel`).remove();
+
+    if (showSuccessToast) {
+      showToast(t('channel-leave-success'), 'info');
+    }
+  } catch (error) {
+    showServerError('Failed to leave channel', error);
+  } finally {
+    // Clean up local state regardless of success/failure
+    if (channelState.channelListener) {
+      state.db.ref(`channels/${currentChannel}/members`).off('value', channelState.channelListener);
+    }
+    stopListenToChannelInvitations();
+    Object.values(channelState.memberDataListeners).forEach(({ ref, listener }) => ref.off('value', listener));
+
+    channelState.currentChannel = null;
+    channelState.members = [];
+    channelState.memberDataListeners = {};
+    channelState.channelListener = null;
+    updateChannelModalUI();
+    renderChannelMembers();
+  }
+}
+
+function updateChannelModalUI() {
+  const channelNameInput = $('#channelNameInput');
+  const joinBtn = $('#joinChannelBtn');
+  const leaveBtn = $('#leaveChannelBtn');
+
+  if (channelState.currentChannel) {
+    channelNameInput.value = channelState.currentChannel;
+    channelNameInput.disabled = true;
+    joinBtn.style.display = 'none';
+    leaveBtn.style.display = 'inline-flex';
+  } else {
+    channelNameInput.value = '';
+    channelNameInput.disabled = false;
+    joinBtn.style.display = 'inline-flex';
+    leaveBtn.style.display = 'none';
+  }
+}
+
+function listenToChannel() {
+  const myId = getPersistentUserId();
+  if (!myId || !state.db) return;
+
+  const userChannelRef = state.db.ref(`users/${myId}/currentChannel`);
+  userChannelRef.on('value', snapshot => {
+    const channelName = snapshot.val();
+    if (channelName) {
+      if (channelName !== channelState.currentChannel) {
+        channelState.currentChannel = channelName;
+        listenToChannelMembers();
+        listenToChannelInvitations(channelName);
+      }
+    } else if (channelState.currentChannel) {
+      // Channel was removed remotely or by leaving
+      leaveChannel(false);
+    }
+    updateChannelModalUI();
+  });
+}
+
+function listenToChannelInvitations(channelName) {
+  stopListenToChannelInvitations(); // Stop previous listener
+
+  const invitationsRef = state.db.ref(`channels/${channelName}/invitations`);
+  channelState.invitationListener = invitationsRef.orderByChild('timestamp').startAt(Date.now()).on('child_added', (snapshot) => {
+    const invitation = snapshot.val();
+    const invitationId = snapshot.key;
+    if (invitation && invitation.hostId !== getPersistentUserId()) {
+      showChannelInvitationToast(invitation, invitationId, channelName);
+    }
+  });
+}
+
+function stopListenToChannelInvitations() {
+  if (channelState.invitationListener && channelState.currentChannel) {
+    const invitationsRef = state.db.ref(`channels/${channelState.currentChannel}/invitations`);
+    invitationsRef.off('child_added', channelState.invitationListener);
+    channelState.invitationListener = null;
+  }
+}
+
+function listenToChannelMembers() {
+  const channelName = channelState.currentChannel;
+  if (!channelName) return;
+
+  const membersRef = state.db.ref(`channels/${channelName}/members`);
+  channelState.channelListener = membersRef.on('value', snapshot => {
+    const memberIds = Object.keys(snapshot.val() || {});
+
+    // Clean up listeners for members who left
+    const currentListeners = Object.keys(channelState.memberDataListeners);
+    currentListeners.filter(id => !memberIds.includes(id)).forEach(id => {
+      const { ref, listener } = channelState.memberDataListeners[id];
+      ref.off('value', listener);
+      delete channelState.memberDataListeners[id];
+    });
+
+    channelState.members = channelState.members.filter(m => memberIds.includes(m.id));
+
+    // Add listeners for new members
+    memberIds.forEach(memberId => {
+      if (!channelState.memberDataListeners[memberId]) {
+        const memberUserRef = state.db.ref(`users/${memberId}`);
+        const listener = memberUserRef.on('value', userSnap => {
+          const userData = userSnap.val();
+          if (!userData) return;
+
+          const memberIndex = channelState.members.findIndex(m => m.id === memberId);
+          const memberData = {
+            id: memberId,
+            name: userData.name,
+            shortId: userData.shortId,
+            status: userData.status,
+          };
+
+          if (memberIndex > -1) {
+            channelState.members[memberIndex] = memberData;
+          } else {
+            channelState.members.push(memberData);
+          }
+          renderChannelMembers();
+        });
+        channelState.memberDataListeners[memberId] = { ref: memberUserRef, listener: listener };
+      }
+    });
+    renderChannelMembers();
+  });
+}
+
+function renderChannelMembers() {
+  const container = $('#channel-members-container');
+  const canInvite = !!state.roomId;
+
+  if (channelState.members.length === 0) {
+    container.innerHTML = `<div class="empty">${t('channel-empty')}</div>`;
     return;
   }
 
-  container.innerHTML = users.map(user => `
-    <div class="friend-item">
-      <div class="friend-info">
-        <div class="friend-name">${escapeHTML(user.name)} <span class="muted">#${user.shortId}</span></div>
+  container.innerHTML = channelState.members.map(member => {
+    const isMe = member.id === getPersistentUserId();
+    if (isMe) return ''; // Don't show self in the list
+
+    const isOnline = member.status?.isOnline;
+    const statusText = isOnline ? (member.status.roomId ? `ルーム: ${member.status.roomId}` : 'オンライン') : 'オフライン';
+    const statusClass = isOnline ? 'online' : 'offline';
+
+    let inviteBtn = '';
+    if (canInvite && isOnline) {
+      const isInMyRoom = state.players.some(p => p.id === member.id);
+      if (!isInMyRoom) {
+        inviteBtn = `<button class="btn" data-action="invite-member" data-member-id="${member.id}" data-member-name="${escapeHTML(member.name)}" style="padding: 4px 8px; font-size: 12px;">${t('channel-invite-to-room')}</button>`;
+      }
+    }
+
+    return `
+      <div class="channel-member-item">
+        <div class="channel-member-info">
+          <div class="channel-member-name">${escapeHTML(member.name)} <span class="muted">#${member.shortId}</span></div>
+          <div class="channel-member-status">
+            <span class="online-status ${statusClass}"></span>
+            <span>${statusText}</span>
+          </div>
+        </div>
+        <div class="channel-member-actions">
+          ${inviteBtn}
+        </div>
       </div>
-      <div class="friend-actions">
-        <button class="btn" data-action="send-request-from-search" data-short-id="${user.shortId}" style="padding: 4px 8px; font-size: 12px;">${t('friends-add-btn')}</button>
-      </div>
-    </div>
-  `).join('');
+    `;
+  }).join('');
 }
 
-async function inviteFriendToRoom(friendId, friendName) {
+async function inviteChannelMemberToRoom(memberId, memberName) {
   if (!state.roomId) return;
 
   try {
-    const invitationsRef = state.db.ref(`invitations/${friendId}`);
-
-    // Check if an invitation to the same room already exists. / 既に同じルームへの招待がないかチェック
-    const existingInvitesSnap = await invitationsRef.orderByChild('roomId').equalTo(state.roomId).once('value');
-    if (existingInvitesSnap.exists()) {
-        showToast(t('friends-invite-already-sent'), 'info');
-        return;
-    }
-
+    const invitationsRef = state.db.ref(`invitations/${memberId}`);
     const invitationData = {
       roomId: state.roomId,
       hostName: state.playerName,
       hasPassword: state.roomHasPassword,
       timestamp: firebase.database.ServerValue.TIMESTAMP,
     };
-
     await invitationsRef.push(invitationData);
-    showToast(t('friends-invite-sent', { name: friendName }), 'success');
+    showToast(t('channel-invite-sent', { name: memberName }), 'success');
   } catch (error) {
-    showServerError(t('friends-invite-fail'), error);
+    showServerError(t('channel-invite-fail'), error);
   }
 }
 
-function showInvitationToast(invitation, invitationId) {
+async function notifyChannelOfRoom() {
+  if (!state.roomId || !state.isHost) return;
+  if (!channelState.currentChannel) {
+    showToast(t('channel-error-not-in-channel'), 'error');
+    inviteMenu.classList.remove('show');
+    return;
+  }
+
+  try {
+    const channelInvitationsRef = state.db.ref(`channels/${channelState.currentChannel}/invitations`);
+    const invitationData = {
+      roomId: state.roomId,
+      hostName: state.playerName,
+      hostId: getPersistentUserId(),
+      hasPassword: state.roomHasPassword,
+      timestamp: firebase.database.ServerValue.TIMESTAMP,
+    };
+    await channelInvitationsRef.push(invitationData);
+    showToast(t('channel-notify-success', { channelName: channelState.currentChannel }), 'success');
+  } catch (error) {
+    showServerError(t('channel-notify-fail'), error);
+  }
+  inviteMenu.classList.remove('show');
+}
+
+function showDirectInvitationToast(invitation, invitationId) {
   const { roomId, hostName, hasPassword } = invitation;
   const toastContainer = document.getElementById('toast-container');
   if (!toastContainer) return;
 
-  // If a toast for this room is already visible, ignore the new invitation. / このルームのトーストが既に表示されている場合、新しい招待は無視する。
+  // If a toast for this room is already visible, ignore the new invitation.
   if ($$(`.toast[data-room-id="${roomId}"]`).length > 0) {
+    // Remove the processed invitation from the database.
     state.db.ref(`invitations/${getPersistentUserId()}/${invitationId}`).remove();
     return;
   }
 
+  // Add to notification center
+  addNotification({
+    type: 'direct',
+    roomId,
+    hostName,
+    hasPassword,
+    timestamp: invitation.timestamp || Date.now(),
+  });
   const toast = document.createElement('div');
   toast.className = 'toast info with-actions';
   toast.dataset.roomId = roomId;
 
   const messageEl = document.createElement('div');
   messageEl.className = 'toast-message';
-  messageEl.textContent = t('friends-invitation-received', { hostName: hostName });
+  messageEl.textContent = t('direct-invitation-received', { hostName: hostName });
 
   const actionsEl = document.createElement('div');
   actionsEl.className = 'toast-actions';
 
   let timeoutId = null;
 
-  // Function to clean up the toast and the DB entry. / トーストとDBエントリをクリーンアップする関数。
+  // Function to clean up the toast and the DB entry.
   const cleanup = () => {
     if (timeoutId) clearTimeout(timeoutId);
     toast.classList.remove('show');
     toast.addEventListener('transitionend', () => toast.remove());
+    // Remove the processed invitation from the database.
     state.db.ref(`invitations/${getPersistentUserId()}/${invitationId}`).remove();
   };
 
   const joinBtn = document.createElement('button');
   joinBtn.className = 'btn';
-  joinBtn.textContent = t('friends-invitation-join');
+  joinBtn.textContent = t('channel-invitation-join');
   joinBtn.onclick = async () => {
     cleanup();
     const password = hasPassword ? prompt(t('realtime-password-prompt')) : '';
@@ -2389,7 +2651,7 @@ function showInvitationToast(invitation, invitationId) {
 
   const declineBtn = document.createElement('button');
   declineBtn.className = 'btn secondary';
-  declineBtn.textContent = t('friends-invitation-decline');
+  declineBtn.textContent = t('channel-invitation-decline');
   declineBtn.onclick = cleanup;
 
   actionsEl.appendChild(joinBtn);
@@ -2404,242 +2666,72 @@ function showInvitationToast(invitation, invitationId) {
   toast.appendChild(progressBar);
 
   toastContainer.appendChild(toast);
-
   setTimeout(() => toast.classList.add('show'), 10);
-
-  // Set a timeout to automatically decline the invitation. / 招待を自動的に拒否するためのタイムアウトを設定。
   timeoutId = setTimeout(cleanup, duration);
 }
 
-async function sendFriendRequest(targetShortId) {
-  if (!targetShortId || !/^\d{5}$/.test(targetShortId)) {
-    showToast(t('friends-request-not-found'), 'error');
-    return;
-  }
+function showChannelInvitationToast(invitation, invitationId, channelName) {
+  const { roomId, hostName, hasPassword } = invitation;
+  const toastContainer = document.getElementById('toast-container');
+  if (!toastContainer) return;
 
-  const myId = getPersistentUserId();
-  const myShortId = playerShortIdDisplay.textContent.replace('#', '');
+  if ($$(`.toast[data-room-id="${roomId}"]`).length > 0) return;
 
-  if (targetShortId === myShortId) {
-    showToast(t('friends-request-self'), 'error');
-    return;
-  }
-
-  try {
-    const shortIdMapRef = state.db.ref('shortIdMap');
-    const snapshot = await shortIdMapRef.child(targetShortId).once('value');
-    const targetUserId = snapshot.val();
-
-    if (!targetUserId) {
-      showToast(t('friends-request-not-found'), 'error');
-      return;
-    }
-
-    // Check if already friends or request already sent. / すでにフレンドか、リクエストが送信済みかを確認
-    const friendSnapshot = await state.db.ref(`users/${myId}/friends/${targetUserId}`).once('value');
-    const requestSnapshot = await state.db.ref(`friendRequests/${targetUserId}/${myId}`).once('value');
-    if (friendSnapshot.exists() || requestSnapshot.exists()) {
-      showToast(t('friends-request-already-sent'), 'info');
-      return;
-    }
-
-    const myData = {
-      name: state.playerName,
-      shortId: myShortId,
-      timestamp: firebase.database.ServerValue.TIMESTAMP,
-    };
-
-    await state.db.ref(`friendRequests/${targetUserId}/${myId}`).set(myData);
-    showToast(t('friends-request-sent'), 'success');
-    $('#friendIdInput').value = '';
-
-  } catch (error) {
-    showServerError(t('friends-request-fail'), error);
-  }
-}
-
-async function acceptFriendRequest(senderId, senderName) {
-  const myId = getPersistentUserId();
-  try {
-    const updates = {};
-    updates[`/users/${myId}/friends/${senderId}`] = true;
-    updates[`/users/${senderId}/friends/${myId}`] = true;
-    updates[`/friendRequests/${myId}/${senderId}`] = null;
-
-    await state.db.ref().update(updates);
-    showToast(t('friends-request-accepted', { name: senderName }), 'success');
-  } catch (error) {
-    showServerError(t('friends-request-fail'), error);
-  }
-}
-
-async function rejectFriendRequest(senderId, senderName) {
-  const myId = getPersistentUserId();
-  try {
-    await state.db.ref(`friendRequests/${myId}/${senderId}`).remove();
-    showToast(t('friends-request-rejected', { name: senderName }), 'success');
-  } catch (error) {
-    showServerError(t('friends-request-fail'), error);
-  }
-}
-
-async function removeFriend(friendId, friendName) {
-  if (!confirm(t('friends-remove-confirm', { name: friendName }))) return;
-
-  const myId = getPersistentUserId();
-  try {
-    const updates = {};
-    updates[`/users/${myId}/friends/${friendId}`] = null;
-    updates[`/users/${friendId}/friends/${myId}`] = null;
-
-    await state.db.ref().update(updates);
-    showToast(t('friends-remove-success', { name: friendName }), 'success');
-  } catch (error) {
-    showServerError(t('friends-remove-fail'), error);
-  }
-}
-
-function renderFriendsList() {
-  const container = $('#friends-list-container');
-  const canInvite = !!state.roomId;
-  if (friendsState.friends.length === 0) {
-    container.innerHTML = `<div class="empty">${t('friends-empty')}</div>`;
-    return;
-  }
-
-  const sortedFriends = [...friendsState.friends].sort((a, b) => {
-    const aOnline = a.status?.isOnline;
-    const bOnline = b.status?.isOnline;
-    if (aOnline && !bOnline) return -1;
-    if (!aOnline && bOnline) return 1;
-    return (b.status?.lastSeen || 0) - (a.status?.lastSeen || 0);
+  // Add to notification center
+  addNotification({
+    type: 'channel',
+    roomId,
+    hostName,
+    hasPassword,
+    channelName,
+    timestamp: invitation.timestamp || Date.now(),
   });
+  const toast = document.createElement('div');
+  toast.className = 'toast info with-actions';
+  toast.dataset.roomId = roomId;
 
-  container.innerHTML = sortedFriends.map(friend => {
-    const isOnline = friend.status?.isOnline;
-    const statusText = isOnline ? (friend.status.roomId ? t('friends-in-room', { roomId: friend.status.roomId }) : t('friends-online')) : t('friends-offline');
-    const statusClass = isOnline ? 'online' : 'offline';
-    
-    let inviteBtn = '';
-    if (canInvite) {
-      const isInMyRoom = state.players.some(p => p.id === friend.id);
-      if (!isInMyRoom) {
-        inviteBtn = `<button class="btn" data-action="invite-friend" data-friend-id="${friend.id}" data-friend-name="${escapeHTML(friend.name)}" style="padding: 4px 8px; font-size: 12px;">${t('friends-invite-to-room')}</button>`;
-      }
-    }
-    
-    const joinBtn = (isOnline && friend.status.roomId) ? `<button class="btn secondary" data-action="join-friend-room" data-room-id="${friend.status.roomId}" data-has-password="${friend.status.hasPassword}" style="padding: 4px 8px; font-size: 12px;">${t('friends-join-room')}</button>` : '';
-    const removeBtn = `<button class="btn danger" data-action="remove-friend" data-friend-id="${friend.id}" data-friend-name="${escapeHTML(friend.name)}" style="padding: 4px 8px; font-size: 12px;">${t('friends-remove')}</button>`;
-    return `
-      <div class="friend-item">
-        <div class="friend-info">
-          <div class="friend-name">${escapeHTML(friend.name)} <span class="muted">#${friend.shortId}</span></div>
-          <div class="friend-status">
-            <span class="online-status ${statusClass}"></span>
-            <span>${statusText}</span>
-          </div>
-        </div>
-        <div class="friend-actions">
-          ${inviteBtn}
-          ${joinBtn}
-          ${removeBtn}
-        </div>
-      </div>
-    `;
-  }).join('');
-}
+  const messageEl = document.createElement('div');
+  messageEl.className = 'toast-message';
+  messageEl.textContent = t('channel-invitation-received', { hostName: hostName, channelName: channelName });
 
-function renderFriendRequests() {
-  const container = $('#friends-requests-container');
-  if (friendsState.friendRequests.length === 0) {
-    container.innerHTML = `<div class="empty">${t('friends-requests-empty')}</div>`;
-    return;
-  }
+  const actionsEl = document.createElement('div');
+  actionsEl.className = 'toast-actions';
 
-  container.innerHTML = friendsState.friendRequests.map(req => `
-    <div class="friend-item">
-      <div class="friend-info">
-        <div class="friend-name">${escapeHTML(req.name)} <span class="muted">#${req.shortId}</span></div>
-      </div>
-      <div class="friend-actions">
-        <button class="btn" data-action="accept-request" data-sender-id="${req.id}" data-sender-name="${escapeHTML(req.name)}" style="padding: 4px 8px; font-size: 12px;">${t('friends-request-accept')}</button>
-        <button class="btn secondary" data-action="reject-request" data-sender-id="${req.id}" data-sender-name="${escapeHTML(req.name)}" style="padding: 4px 8px; font-size: 12px;">${t('friends-request-reject')}</button>
-      </div>
-    </div>
-  `).join('');
-}
+  let timeoutId = null;
+  const cleanup = () => {
+    if (timeoutId) clearTimeout(timeoutId);
+    toast.classList.remove('show');
+    toast.addEventListener('transitionend', () => toast.remove());
+  };
 
-function listenToInvitations() {
-  const myId = getPersistentUserId();
-  if (!myId || !state.db) return;
+  const joinBtn = document.createElement('button');
+  joinBtn.className = 'btn';
+  joinBtn.textContent = t('channel-invitation-join');
+  joinBtn.onclick = async () => {
+    cleanup();
+    const password = hasPassword ? prompt(t('realtime-password-prompt')) : '';
+    if (password !== null) await joinRoom(roomId, password);
+  };
 
-  const invitationsRef = state.db.ref(`invitations/${myId}`);
-  invitationsRef.on('child_added', (snapshot) => {
-    const invitation = snapshot.val();
-    const invitationId = snapshot.key;
-    if (invitation) showInvitationToast(invitation, invitationId);
-  });
-}
+  const declineBtn = document.createElement('button');
+  declineBtn.className = 'btn secondary';
+  declineBtn.textContent = t('channel-invitation-decline');
+  declineBtn.onclick = cleanup;
 
-function listenToFriends() { // フレンドをリッスンする
-  const myId = getPersistentUserId();
-  if (!myId || !state.db) return;
+  actionsEl.appendChild(joinBtn);
+  actionsEl.appendChild(declineBtn);
+  toast.appendChild(messageEl);
+  toast.appendChild(actionsEl);
 
-  // Listen to shortIdMap for search functionality. / 検索機能のためにshortIdMapをリッスン
-  const shortIdMapRef = state.db.ref('shortIdMap');
-  shortIdMapRef.on('value', snapshot => {
-    friendsState.shortIdMapCache = snapshot.val() || {};
-  });
+  const duration = 30000;
+  const progressBar = document.createElement('div');
+  progressBar.className = 'toast-progress-bar';
+  progressBar.style.animationDuration = `${duration}ms`;
+  toast.appendChild(progressBar);
 
-  // Listen for friend requests. / フレンド申請をリッスン
-  const requestsRef = state.db.ref(`friendRequests/${myId}`);
-  requestsRef.on('value', snapshot => {
-    const requests = snapshot.val() || {};
-    friendsState.friendRequests = Object.entries(requests).map(([id, data]) => ({ id, ...data }));
-    renderFriendRequests();
-  });
-
-  // Listen for friends list changes. / フレンドリストの変更をリッスン
-  const friendsRef = state.db.ref(`users/${myId}/friends`);
-  friendsRef.on('value', snapshot => {
-    const friendIds = Object.keys(snapshot.val() || {});
-    // Remove listeners for friends who are no longer in the list. / リストに存在しなくなったフレンドのリスナーを削除
-    const currentListeners = Object.keys(friendsState.friendDataListeners);
-    currentListeners.filter(id => !friendIds.includes(id)).forEach(id => {
-      state.db.ref(`users/${id}`).off('value', friendsState.friendDataListeners[id]);
-      delete friendsState.friendDataListeners[id];
-    });
-
-    friendsState.friends = friendsState.friends.filter(f => friendIds.includes(f.id));
-
-    // Add listeners for new friends. / 新しいフレンドのリスナーを追加
-    friendIds.forEach(friendId => {
-      if (!friendsState.friendDataListeners[friendId]) {
-        const friendUserRef = state.db.ref(`users/${friendId}`);
-        const listener = friendUserRef.on('value', userSnap => {
-          const userData = userSnap.val();
-          if (!userData) return;
-
-          const friendIndex = friendsState.friends.findIndex(f => f.id === friendId);
-          const friendData = {
-            id: friendId,
-            name: userData.name,
-            shortId: userData.shortId,
-            status: userData.status,
-          };
-
-          if (friendIndex > -1) {
-            friendsState.friends[friendIndex] = friendData;
-          } else {
-            friendsState.friends.push(friendData);
-          }
-          renderFriendsList();
-        });
-        friendsState.friendDataListeners[friendId] = listener;
-      }
-    });
-    renderFriendsList();
-  });
+  toastContainer.appendChild(toast);
+  setTimeout(() => toast.classList.add('show'), 10);
+  timeoutId = setTimeout(cleanup, duration);
 }
 
 // --- Initialization and Event Listener Setup / 初期化とイベントリスナー設定 ------------------------------------
@@ -2687,7 +2779,11 @@ function setupEventListeners() {
 
   // Realtime controls. / リアルタイムコントロール
   createRoomBtn.addEventListener('click', createRoom);
-  leaveRoomBtn.addEventListener('click', () => handleLeaveRoom(true));
+  leaveRoomBtn.addEventListener('click', () => {
+    if (confirm(t('realtime-leave-confirm'))) {
+      handleLeaveRoom(true);
+    }
+  });
   setVcLinkBtn.addEventListener('click', setVoiceChannelLink);
   // Player Settings Modal. / プレイヤー設定モーダル
   playerSettingsBtn.addEventListener('click', () => playerSettingsModal.style.display = 'flex');
@@ -2862,88 +2958,76 @@ function setupEventListeners() {
     }
   });
 
-  // Invite dropdown menu. / 招待ドロップダウンメニュー
-  inviteBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    inviteMenu.classList.toggle('show');
-  });
-
-  copyInviteLinkBtn.addEventListener('click', async () => {
-    if (!state.isHost || !state.roomId) return;
-    const url = new URL(window.location.origin + window.location.pathname);
-    url.searchParams.set('room', state.roomId);
-    if (state.roomPassword) {
-      url.searchParams.set('password', state.roomPassword);
-    }
-    try {
-      inviteMenu.classList.remove('show');
-      await navigator.clipboard.writeText(url.href);
-      showToast(t('copied-invite-link'), 'success');
-    } catch (err) {
-      console.error('Failed to copy invite URL:', err);
-      showToast(t('copy-failed'), 'error');
-    }
-  });
-
   document.addEventListener('click', (e) => {
     if (!inviteContainer.contains(e.target)) {
       inviteMenu.classList.remove('show');
     }
   });
 
-  // Friends Modal. / フレンドモーダル
-  friendsBtn.addEventListener('click', () => friendsModal.style.display = 'flex');
-  inviteFriendsBtn.addEventListener('click', () => {
-    friendsModal.style.display = 'flex';
-  });
-  closeFriendsModalBtn.addEventListener('click', () => friendsModal.style.display = 'none');
-  friendsModal.addEventListener('click', e => {
-    if (e.target === friendsModal) friendsModal.style.display = 'none';
+  // Invite dropdown menu. / 招待ドロップダウンメニュー
+  inviteBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    inviteMenu.classList.toggle('show');
   });
 
-  // Friends Modal Tabs. / フレンドモーダルタブ
-  friendsModal.querySelector('.tabs').addEventListener('click', e => {
-    if (e.target.classList.contains('tab-btn')) {
-      const tabId = e.target.dataset.tab;
-      friendsModal.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
-      friendsModal.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
-      e.target.classList.add('active');
-      $(`#${tabId}`).classList.add('active');
+  // Channel & Notifications Modal
+  channelBtn.addEventListener('click', () => {
+    renderNotifications(); // Render notification list
+    channelModal.style.display = 'flex';
+    // Mark notifications as read when opening the modal.
+    state.unreadNotifications = 0;
+    state.notifications.forEach(n => n.read = true);
+    updateNotificationBadge();
+  });
+  closeChannelModalBtn.addEventListener('click', () => channelModal.style.display = 'none');
+  channelModal.addEventListener('click', e => {
+    if (e.target === channelModal) channelModal.style.display = 'none';
+  });
+  $('#joinChannelBtn').addEventListener('click', joinChannel);
+  $('#leaveChannelBtn').addEventListener('click', () => leaveChannel(true));
+  $('#channelNameInput').addEventListener('keydown', e => {
+    if (e.key === 'Enter') $('#joinChannelBtn').click();
+  });
+
+  inviteChannelMembersBtn.addEventListener('click', () => {
+    if (!channelState.currentChannel) {
+      showToast(t('channel-error-not-in-channel'), 'error');
+      return;
     }
+    channelModal.style.display = 'flex';
   });
 
-  $('#friends-requests-container').addEventListener('click', e => {
-    const acceptBtn = e.target.closest('[data-action="accept-request"]');
-    if (acceptBtn) acceptFriendRequest(acceptBtn.dataset.senderId, acceptBtn.dataset.senderName);
+  if (notifyChannelBtn) {
+    notifyChannelBtn.addEventListener('click', notifyChannelOfRoom);
+  }
 
-    const rejectBtn = e.target.closest('[data-action="reject-request"]');
-    if (rejectBtn) rejectFriendRequest(rejectBtn.dataset.senderId, rejectBtn.dataset.senderName);
+  $('#channel-members-container').addEventListener('click', e => {
+    const inviteBtn = e.target.closest('[data-action="invite-member"]');
+    if (inviteBtn) inviteChannelMemberToRoom(inviteBtn.dataset.memberId, inviteBtn.dataset.memberName);
   });
 
-  $('#friends-list-container').addEventListener('click', async e => {
-    const removeBtn = e.target.closest('[data-action="remove-friend"]');
-    if (removeBtn) removeFriend(removeBtn.dataset.friendId, removeBtn.dataset.friendName);
+  notificationsListEl.addEventListener('click', async (e) => {
+    const dismissBtn = e.target.closest('[data-action="dismiss-notification"]');
+    const joinBtn = e.target.closest('[data-action="join-from-notification"]');
+    const itemEl = e.target.closest('.notification-item');
+    if (!itemEl) return;
 
-    const joinBtn = e.target.closest('[data-action="join-friend-room"]');
+    const notificationId = itemEl.dataset.notificationId;
+    const notificationIndex = state.notifications.findIndex(n => n.id === notificationId);
+    if (notificationIndex === -1) return;
+
+    if (dismissBtn) {
+      state.notifications.splice(notificationIndex, 1);
+      renderNotifications();
+    }
+
     if (joinBtn) {
-      const { roomId, hasPassword } = joinBtn.dataset;
-      const password = hasPassword === 'true' ? prompt(t('realtime-password-prompt')) : '';
-      if (password !== null) await joinRoom(roomId, password);
-    }
-
-    const inviteBtn = e.target.closest('[data-action="invite-friend"]');
-    if (inviteBtn) {
-      inviteFriendToRoom(inviteBtn.dataset.friendId, inviteBtn.dataset.friendName);
-    }
-  });
-
-  // Friends actions (in add tab). / フレンドアクション（追加タブ内）
-  $('#friendIdInput').addEventListener('input', handleFriendSearch);
-
-  $('#friends-add-tab').addEventListener('click', e => {
-    const sendBtn = e.target.closest('[data-action="send-request-from-search"]');
-    if (sendBtn) {
-      sendFriendRequest(sendBtn.dataset.shortId);
+      const notification = state.notifications[notificationIndex];
+      channelModal.style.display = 'none'; // Close modal before joining
+      const password = notification.hasPassword ? prompt(t('realtime-password-prompt')) : '';
+      if (password !== null) {
+        await joinRoom(notification.roomId, password);
+      }
     }
   });
 
@@ -2975,6 +3059,23 @@ function setupEventListeners() {
       await joinRoom(roomId, password);
     }
   });
+
+  // Join by ID from modal
+  const joinRoomByIdBtn = $('#joinRoomByIdBtn');
+  if (joinRoomByIdBtn) {
+      joinRoomByIdBtn.addEventListener('click', async () => {
+          const roomIdInput = $('#joinRoomIdInput');
+          const passwordInput = $('#joinRoomPasswordInput');
+          const roomId = roomIdInput.value.trim();
+          const password = passwordInput.value.trim();
+          if (!roomId) {
+              showToast(t('realtime-error-join-no-id'), 'error');
+              roomIdInput.focus();
+              return;
+          }
+          await joinRoom(roomId, password);
+      });
+  }
 
   // Report Modal. / 通報モーダル
   const reportModal = $('#reportModal');
@@ -3077,7 +3178,7 @@ async function initializeBanListener() {
 
     // Enable/disable online feature buttons based on ban status. / BAN状態に応じてオンライン機能のボタンを無効化/有効化
     $('#openRealtimeBtn').disabled = isCurrentlyBanned;
-    $('#friendsBtn').disabled = isCurrentlyBanned;
+    $('#channelBtn').disabled = isCurrentlyBanned;
 
     if (isCurrentlyBanned) {
       // If in a room when banned, force leave. / BANされたときにルームに参加している場合は退出させる
@@ -3091,7 +3192,7 @@ async function initializeBanListener() {
       }
       // Close any open online-related modals. / オンライン関連のモーダルが開いていれば閉じる
       if (realtimeModal.style.display !== 'none') realtimeModal.style.display = 'none';
-      if (friendsModal.style.display !== 'none') friendsModal.style.display = 'none';
+      if (channelModal.style.display !== 'none') channelModal.style.display = 'none';
     } else if (state.isBanned && !isCurrentlyBanned && !isInitialCall) {
       // If unbanned (excluding the initial call). / BAN状態から解除された場合（初回呼び出しを除く）
       showToast(t('unbanned-reload-notification'), 'success', 5000);
@@ -3142,6 +3243,21 @@ function listenToGlobalMute() {
             }
         }
     });
+}
+
+function listenToInvitations() {
+  const myId = getPersistentUserId();
+  if (!myId || !state.db) return;
+
+  const invitationsRef = state.db.ref(`invitations/${myId}`);
+  // Listen for new invitations added after the page loaded.
+  invitationsRef.orderByChild('timestamp').startAt(Date.now()).on('child_added', (snapshot) => {
+    const invitation = snapshot.val();
+    const invitationId = snapshot.key;
+    if (invitation) {
+      showDirectInvitationToast(invitation, invitationId);
+    }
+  });
 }
 
 function init() {
@@ -3235,10 +3351,8 @@ function init() {
         // Check ban status. If banned, some features will be restricted. / BAN状態をチェック。BANされている場合、一部機能が制限される。
         await initializeBanListener();
         listenToAnnouncements();
-        listenToFriends();
+        listenToChannel();
         listenToInvitations();
-        listenToGlobalMute();
-
         const persistentUserId = getPersistentUserId();
         const shortId = await getOrCreateUserShortId(persistentUserId, state.playerName);
         manageUserPresence();
